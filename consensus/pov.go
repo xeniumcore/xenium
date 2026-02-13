@@ -15,8 +15,8 @@ func VerifyTransactions(txs []domain.Transaction) error {
 	return nil
 }
 
-func ApplyTransactions(state map[string]int, txs []domain.Transaction) (map[string]int, error) {
-	next := make(map[string]int, len(state))
+func ApplyTransactions(state map[string]domain.Account, txs []domain.Transaction, producer string) (map[string]domain.Account, error) {
+	next := make(map[string]domain.Account, len(state))
 	for k, v := range state {
 		next[k] = v
 	}
@@ -28,11 +28,33 @@ func ApplyTransactions(state map[string]int, txs []domain.Transaction) (map[stri
 		if tx.From == "" {
 			return nil, errors.New("missing sender at index " + itoa(i))
 		}
-		if next[tx.From] < tx.Amount {
+		if tx.Nonce == 0 {
+			return nil, errors.New("invalid nonce at index " + itoa(i))
+		}
+		if tx.Fee < 0 {
+			return nil, errors.New("invalid fee at index " + itoa(i))
+		}
+		from := next[tx.From]
+		if from.Nonce+1 != tx.Nonce {
+			return nil, errors.New("nonce mismatch at index " + itoa(i))
+		}
+		total := tx.Amount + tx.Fee
+		if from.Balance < total {
 			return nil, errors.New("insufficient balance at index " + itoa(i))
 		}
-		next[tx.From] -= tx.Amount
-		next[tx.To] += tx.Amount
+		from.Balance -= total
+		from.Nonce = tx.Nonce
+		next[tx.From] = from
+
+		to := next[tx.To]
+		to.Balance += tx.Amount
+		next[tx.To] = to
+
+		if producer != "" && tx.Fee > 0 {
+			p := next[producer]
+			p.Balance += tx.Fee
+			next[producer] = p
+		}
 	}
 	return next, nil
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/ecdsa"
 	"fmt"
 	"os"
 	"sort"
@@ -26,7 +25,10 @@ func main() {
 	cfg := app.DefaultConfig()
 	cfg.Chain.DeterministicPoH = true
 	cfg.Chain.PoHSeed = 1
-	node := app.NewNode(cfg, adapters.SystemClock{}, adapters.StdLogger{})
+	node, err := app.NewNode(cfg, adapters.SystemClock{}, adapters.StdLogger{})
+	if err != nil {
+		panic(err)
+	}
 
 	xenium := node.Chain
 
@@ -59,16 +61,18 @@ func main() {
 
 	printStakeSummary("Stake (initial)", xenium)
 
-	tx1 := domain.Transaction{To: bob.Address, Amount: 50}
-	if err := consensus.SignTransaction(alice.PrivateKey, &tx1); err != nil {
+	nonces := make(map[string]uint64)
+
+	tx1 := makeTx(alice, bob.Address, 50, 1, nonces)
+	if err := consensus.VerifyTransactionSignature(tx1); err != nil {
 		panic(err)
 	}
 	if err := xenium.AddBlock([]domain.Transaction{tx1}); err != nil {
 		panic(err)
 	}
 
-	tx2 := domain.Transaction{To: charlie.Address, Amount: 20}
-	if err := consensus.SignTransaction(bob.PrivateKey, &tx2); err != nil {
+	tx2 := makeTx(bob, charlie.Address, 20, 1, nonces)
+	if err := consensus.VerifyTransactionSignature(tx2); err != nil {
 		panic(err)
 	}
 	if err := xenium.AddBlock([]domain.Transaction{tx2}); err != nil {
@@ -84,8 +88,8 @@ func main() {
 	oldChain := append([]domain.Block(nil), xenium.Chain...)
 
 	parentHash := xenium.Chain[1].Hash
-	tx3 := domain.Transaction{To: alice.Address, Amount: 10}
-	if err := consensus.SignTransaction(charlie.PrivateKey, &tx3); err != nil {
+	tx3 := makeTx(charlie, alice.Address, 10, 1, nonces)
+	if err := consensus.VerifyTransactionSignature(tx3); err != nil {
 		panic(err)
 	}
 	forkHash, err := xenium.AddBlockExternal(parentHash, []domain.Transaction{tx3})
@@ -94,8 +98,8 @@ func main() {
 	}
 
 	// Extend the fork to ensure higher cumulative weight.
-	tx4 := domain.Transaction{To: bob.Address, Amount: 5}
-	if err := consensus.SignTransaction(alice.PrivateKey, &tx4); err != nil {
+	tx4 := makeTx(alice, bob.Address, 5, 1, nonces)
+	if err := consensus.VerifyTransactionSignature(tx4); err != nil {
 		panic(err)
 	}
 	forkHash, err = xenium.AddBlockExternal(forkHash, []domain.Transaction{tx4})
@@ -104,15 +108,15 @@ func main() {
 	}
 
 	// Additional forks for multi-candidate evaluation.
-	_, err = xenium.AddBlockExternal(parentHash, []domain.Transaction{makeTx(bob.PrivateKey, alice.Address, 2)})
+	_, err = xenium.AddBlockExternal(parentHash, []domain.Transaction{makeTx(bob, alice.Address, 2, 1, nonces)})
 	if err != nil {
 		panic(err)
 	}
-	forkB, err := xenium.AddBlockExternal(parentHash, []domain.Transaction{makeTx(alice.PrivateKey, bob.Address, 3)})
+	forkB, err := xenium.AddBlockExternal(parentHash, []domain.Transaction{makeTx(alice, bob.Address, 3, 1, nonces)})
 	if err != nil {
 		panic(err)
 	}
-	_, err = xenium.AddBlockExternal(forkB, []domain.Transaction{makeTx(bob.PrivateKey, charlie.Address, 1)})
+	_, err = xenium.AddBlockExternal(forkB, []domain.Transaction{makeTx(bob, charlie.Address, 1, 1, nonces)})
 	if err != nil {
 		panic(err)
 	}
@@ -297,9 +301,11 @@ func printForkTimeline(chain *core.Blockchain) {
 	fmt.Println()
 }
 
-func makeTx(priv *ecdsa.PrivateKey, to string, amount int) domain.Transaction {
-	tx := domain.Transaction{To: to, Amount: amount}
-	if err := consensus.SignTransaction(priv, &tx); err != nil {
+func makeTx(w *domain.Wallet, to string, amount int, fee int, nonces map[string]uint64) domain.Transaction {
+	next := nonces[w.Address] + 1
+	nonces[w.Address] = next
+	tx := domain.Transaction{To: to, Amount: amount, Fee: fee, Nonce: next}
+	if err := consensus.SignTransaction(w.PrivateKey, &tx); err != nil {
 		panic(err)
 	}
 	return tx

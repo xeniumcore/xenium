@@ -10,7 +10,7 @@
 
 ## Summary
 
-Xenium is a single-node, experimental blockchain consensus engine written in Go. It combines PoH (time), PoS (stake), and PoV (state validity) with deterministic fork-choice, reorg guards, and epoch stake snapshots. The architecture is hexagonal to keep core consensus deterministic and infrastructure swappable.
+Xenium is a single-node, experimental blockchain consensus engine written in Go. It combines PoH (time), PoS (stake), and PoV (state validity) with deterministic fork-choice, reorg guards, and epoch stake snapshots. Simulation is reproducible via a deterministic PoH seed. The architecture is hexagonal to keep core consensus deterministic and infrastructure swappable.
 
 ## Architecture
 
@@ -62,6 +62,8 @@ Config is injected via `app.Config`:
 - `EpochLength`: slots per epoch for stake snapshots
 - `DeterministicPoH`: if true, PoH seed is fixed for reproducible simulations
 - `PoHSeed`: seed value used when `DeterministicPoH` is enabled
+- `MaxBlockTxs`: maximum transactions selected per block
+- `DataDir`: data directory for persistent storage (blocks, index, snapshots)
 
 Default values are defined in `app/config.go`.
 

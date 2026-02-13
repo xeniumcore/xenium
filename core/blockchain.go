@@ -25,6 +25,7 @@ type ChainConfig struct {
 	EpochLength          uint64
 	DeterministicPoH     bool
 	PoHSeed              int64
+	MaxBlockTxs          int
 }
 
 type ReorgMetrics struct {
@@ -48,27 +49,30 @@ type EpochSnapshot struct {
 }
 
 type Blockchain struct {
-	Chain            []domain.Block
-	Blocks           map[string]domain.Block
-	Parents          map[string]string
-	CanonicalTip     string
-	Validators       map[string]*domain.Validator
-	Stats            map[string]*domain.ValidatorStats
-	rand             *rand.Rand
-	poh              *consensus.PoH
-	State            map[string]int
-	Genesis          map[string]int
-	SlotProduced     map[uint64]string
-	SlotProducers    map[uint64]map[string]string
-	Equivocations    []EquivocationProof
+	Chain             []domain.Block
+	Blocks            map[string]domain.Block
+	Parents           map[string]string
+	CanonicalTip      string
+	Validators        map[string]*domain.Validator
+	Stats             map[string]*domain.ValidatorStats
+	rand              *rand.Rand
+	poh               *consensus.PoH
+	State             map[string]domain.Account
+	Genesis           map[string]domain.Account
+	SlotProduced      map[uint64]string
+	SlotProducers     map[uint64]map[string]string
+	Equivocations     []EquivocationProof
 	LastProcessedSlot uint64
 	FinalizedSlot     uint64
-	Config           ChainConfig
-	ReorgStats       ReorgMetrics
-	Clock            ports.Clock
-	Logger           ports.Logger
-	currentEpoch     uint64
-	snapshots        map[uint64]*EpochSnapshot
+	Config            ChainConfig
+	ReorgStats        ReorgMetrics
+	Clock             ports.Clock
+	Logger            ports.Logger
+	currentEpoch      uint64
+	snapshots         map[uint64]*EpochSnapshot
+	blockStore        ports.BlockStore
+	snapshotStore     ports.SnapshotStore
+	Mempool           *Mempool
 }
 
 func NewBlockchain(cfg ChainConfig, clock ports.Clock, logger ports.Logger) *Blockchain {
@@ -77,8 +81,8 @@ func NewBlockchain(cfg ChainConfig, clock ports.Clock, logger ports.Logger) *Blo
 		Parents:       make(map[string]string),
 		Validators:    make(map[string]*domain.Validator),
 		Stats:         make(map[string]*domain.ValidatorStats),
-		State:         make(map[string]int),
-		Genesis:       make(map[string]int),
+		State:         make(map[string]domain.Account),
+		Genesis:       make(map[string]domain.Account),
 		SlotProduced:  make(map[uint64]string),
 		SlotProducers: make(map[uint64]map[string]string),
 		Config:        cfg,
@@ -95,6 +99,9 @@ func NewBlockchain(cfg ChainConfig, clock ports.Clock, logger ports.Logger) *Blo
 	if bc.Config.EpochLength == 0 {
 		bc.Config.EpochLength = consensus.SlotsPerEpoch
 	}
+	if bc.Config.MaxBlockTxs == 0 {
+		bc.Config.MaxBlockTxs = 100
+	}
 	seed := int64(0)
 	if bc.Config.DeterministicPoH {
 		seed = bc.Config.PoHSeed
@@ -110,6 +117,7 @@ func NewBlockchain(cfg ChainConfig, clock ports.Clock, logger ports.Logger) *Blo
 	bc.CanonicalTip = genesis.Hash
 	bc.rebuildCanonicalChain()
 	bc.updateFinality()
+	bc.Mempool = NewMempool()
 	return bc
 }
 
@@ -117,10 +125,26 @@ func (bc *Blockchain) SetBalance(address string, amount int) {
 	if amount < 0 {
 		return
 	}
-	bc.State[address] = amount
+	acct := bc.State[address]
+	acct.Balance = amount
+	bc.State[address] = acct
 	if len(bc.Chain) <= 1 {
-		bc.Genesis[address] = amount
+		bc.Genesis[address] = acct
 	}
+}
+
+func (bc *Blockchain) AddTx(tx domain.Transaction) error {
+	if bc.Mempool == nil {
+		bc.Mempool = NewMempool()
+	}
+	return bc.Mempool.Add(tx)
+}
+
+func (bc *Blockchain) SelectTxsForBlock(max int, producerAddr string) []domain.Transaction {
+	if bc.Mempool == nil {
+		return nil
+	}
+	return bc.Mempool.PopForBlock(bc.State, max, producerAddr)
 }
 
 func (bc *Blockchain) AddValidator(name string, stake int, pubKey string, priv *ecdsa.PrivateKey) error {
@@ -139,12 +163,16 @@ func (bc *Blockchain) AddBlock(txs []domain.Transaction) error {
 	slot := bc.poh.Slot()
 	bc.ensureSnapshotForSlot(slot)
 	validator := bc.leaderForSlot(slot)
+	producerAddr := bc.validatorRewardAddress(validator)
 
+	if len(txs) == 0 && bc.Mempool != nil {
+		txs = bc.SelectTxsForBlock(bc.Config.MaxBlockTxs, producerAddr)
+	}
 	if err := consensus.VerifyTransactions(txs); err != nil {
 		consensus.SlashValidator(bc.Validators, validator, consensus.SlashPenalty)
 		return err
 	}
-	nextState, err := consensus.ApplyTransactions(bc.State, txs)
+	nextState, err := consensus.ApplyTransactions(bc.State, txs, producerAddr)
 	if err != nil {
 		consensus.SlashValidator(bc.Validators, validator, consensus.SlashPenalty)
 		return err
@@ -181,6 +209,12 @@ func (bc *Blockchain) AddBlock(txs []domain.Transaction) error {
 		return err
 	}
 
+	if bc.blockStore != nil {
+		if err := bc.blockStore.SaveBlock(block); err != nil {
+			return err
+		}
+	}
+
 	eqErr := bc.registerSlotProducer(block)
 	bc.insertBlock(block)
 	bc.updateCanonical(block.Hash)
@@ -205,6 +239,7 @@ func (bc *Blockchain) AddBlockExternal(prevHash string, txs []domain.Transaction
 	slot := bc.poh.Slot()
 	bc.ensureSnapshotForSlot(slot)
 	validator := bc.leaderForSlot(slot)
+	producerAddr := bc.validatorRewardAddress(validator)
 
 	if err := consensus.VerifyTransactions(txs); err != nil {
 		consensus.SlashValidator(bc.Validators, validator, consensus.SlashPenalty)
@@ -214,7 +249,7 @@ func (bc *Blockchain) AddBlockExternal(prevHash string, txs []domain.Transaction
 	if err != nil {
 		return "", err
 	}
-	nextState, err := consensus.ApplyTransactions(parentState, txs)
+	nextState, err := consensus.ApplyTransactions(parentState, txs, producerAddr)
 	if err != nil {
 		consensus.SlashValidator(bc.Validators, validator, consensus.SlashPenalty)
 		return "", err
@@ -251,6 +286,12 @@ func (bc *Blockchain) AddBlockExternal(prevHash string, txs []domain.Transaction
 		return "", err
 	}
 
+	if bc.blockStore != nil {
+		if err := bc.blockStore.SaveBlock(block); err != nil {
+			return "", err
+		}
+	}
+
 	eqErr := bc.registerSlotProducer(block)
 	bc.insertBlock(block)
 	bc.updateCanonical(block.Hash)
@@ -274,7 +315,7 @@ func (bc *Blockchain) VerifyChain() error {
 	}
 	expectedTick := genesis.Tick
 	seenSlots := make(map[uint64]string)
-	state := make(map[string]int)
+	state := make(map[string]domain.Account)
 	for k, v := range bc.Genesis {
 		state[k] = v
 	}
@@ -327,7 +368,7 @@ func (bc *Blockchain) VerifyChain() error {
 			consensus.SlashValidator(bc.Validators, cur.Validator, consensus.SlashPenalty)
 			return errors.New("invalid tx root at index " + itoa(i))
 		}
-		nextState, err := consensus.ApplyTransactions(state, cur.Transactions)
+		nextState, err := consensus.ApplyTransactions(state, cur.Transactions, bc.validatorRewardAddress(cur.Validator))
 		if err != nil {
 			consensus.SlashValidator(bc.Validators, cur.Validator, consensus.SlashPenalty)
 			return err
@@ -341,7 +382,7 @@ func (bc *Blockchain) VerifyChain() error {
 	return nil
 }
 
-func (bc *Blockchain) verifyBlockOnAccept(prev domain.Block, block domain.Block, state map[string]int) error {
+func (bc *Blockchain) verifyBlockOnAccept(prev domain.Block, block domain.Block, state map[string]domain.Account) error {
 	if block.PrevHash != prev.Hash {
 		return errors.New("invalid prev hash for block")
 	}
@@ -358,7 +399,7 @@ func (bc *Blockchain) verifyBlockOnAccept(prev domain.Block, block domain.Block,
 	if consensus.TxRoot(block.Transactions) != block.TxRoot {
 		return errors.New("invalid tx root for block")
 	}
-	nextState, err := consensus.ApplyTransactions(state, block.Transactions)
+	nextState, err := consensus.ApplyTransactions(state, block.Transactions, bc.validatorRewardAddress(block.Validator))
 	if err != nil {
 		return err
 	}
@@ -582,12 +623,12 @@ func (bc *Blockchain) rebuildSlotMap() {
 }
 
 func (bc *Blockchain) rebuildStateFromCanonical() {
-	state := make(map[string]int)
+	state := make(map[string]domain.Account)
 	for k, v := range bc.Genesis {
 		state[k] = v
 	}
 	for i := 1; i < len(bc.Chain); i++ {
-		next, err := consensus.ApplyTransactions(state, bc.Chain[i].Transactions)
+		next, err := consensus.ApplyTransactions(state, bc.Chain[i].Transactions, bc.validatorRewardAddress(bc.Chain[i].Validator))
 		if err != nil {
 			return
 		}
@@ -647,6 +688,10 @@ func (bc *Blockchain) ensureSnapshot(epoch uint64) {
 	}
 	bc.snapshots[epoch] = snap
 	bc.currentEpoch = epoch
+	if bc.snapshotStore != nil {
+		stateRoot := consensus.StateRoot(bc.State)
+		_ = bc.snapshotStore.SaveEpochSnapshot(epoch, stateRoot, snap.Validators)
+	}
 }
 
 func (bc *Blockchain) snapshotForSlot(slot uint64) *EpochSnapshot {
@@ -783,17 +828,17 @@ func (bc *Blockchain) handleEquivocation(validator string, slot uint64, h1 strin
 		validator, slot, h1, h2, stats.JailedUntilEpoch)
 }
 
-func (bc *Blockchain) stateAtTip(tipHash string) (map[string]int, error) {
+func (bc *Blockchain) stateAtTip(tipHash string) (map[string]domain.Account, error) {
 	chain, err := bc.chainFromTip(tipHash)
 	if err != nil {
 		return nil, err
 	}
-	state := make(map[string]int)
+	state := make(map[string]domain.Account)
 	for k, v := range bc.Genesis {
 		state[k] = v
 	}
 	for i := 1; i < len(chain); i++ {
-		next, err := consensus.ApplyTransactions(state, chain[i].Transactions)
+		next, err := consensus.ApplyTransactions(state, chain[i].Transactions, bc.validatorRewardAddress(chain[i].Validator))
 		if err != nil {
 			return nil, err
 		}
@@ -969,6 +1014,23 @@ func ensureLogger(l ports.Logger) ports.Logger {
 		return nopLogger{}
 	}
 	return l
+}
+
+func (bc *Blockchain) validatorRewardAddress(name string) string {
+	v := bc.Validators[name]
+	if v == nil || v.PubKey == "" {
+		return ""
+	}
+	addr, err := domain.AddressFromPubKey(v.PubKey)
+	if err != nil {
+		return ""
+	}
+	return addr
+}
+
+func (bc *Blockchain) SetStorage(blockStore ports.BlockStore, snapshotStore ports.SnapshotStore) {
+	bc.blockStore = blockStore
+	bc.snapshotStore = snapshotStore
 }
 
 type nopLogger struct{}

@@ -46,6 +46,10 @@ func HashTx(tx domain.Transaction) []byte {
 	b.WriteString("|")
 	b.WriteString(strconv.Itoa(tx.Amount))
 	b.WriteString("|")
+	b.WriteString(strconv.Itoa(tx.Fee))
+	b.WriteString("|")
+	b.WriteString(strconv.FormatUint(tx.Nonce, 10))
+	b.WriteString("|")
 	b.WriteString(tx.PubKey)
 	sum := sha256.Sum256([]byte(b.String()))
 	return sum[:]
@@ -63,7 +67,7 @@ func TxRoot(txs []domain.Transaction) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func StateRoot(state map[string]int) string {
+func StateRoot(state map[string]domain.Account) string {
 	if len(state) == 0 {
 		sum := sha256.Sum256(nil)
 		return hex.EncodeToString(sum[:])
@@ -77,7 +81,9 @@ func StateRoot(state map[string]int) string {
 	for _, k := range keys {
 		h.Write([]byte(k))
 		h.Write([]byte(":"))
-		h.Write([]byte(strconv.Itoa(state[k])))
+		h.Write([]byte(strconv.Itoa(state[k].Balance)))
+		h.Write([]byte("|"))
+		h.Write([]byte(strconv.FormatUint(state[k].Nonce, 10)))
 		h.Write([]byte(";"))
 	}
 	return hex.EncodeToString(h.Sum(nil))
@@ -95,6 +101,7 @@ func SignTransaction(priv *ecdsa.PrivateKey, tx *domain.Transaction) error {
 	}
 	tx.From = addr
 	digest := HashTx(*tx)
+	tx.Hash = hex.EncodeToString(digest)
 	sig, err := ecdsa.SignASN1(rand.Reader, priv, digest)
 	if err != nil {
 		return err
@@ -127,6 +134,13 @@ func VerifyTransactionSignature(tx domain.Transaction) error {
 		return err
 	}
 	digest := HashTx(tx)
+	hashHex := hex.EncodeToString(digest)
+	if tx.Hash == "" {
+		return errors.New("missing tx hash")
+	}
+	if tx.Hash != hashHex {
+		return errors.New("tx hash mismatch")
+	}
 	if !ecdsa.VerifyASN1(&ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, digest, sigBytes) {
 		return errors.New("invalid signature")
 	}

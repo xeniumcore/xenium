@@ -31,7 +31,7 @@ func buildBlock(t *testing.T, bc *Blockchain, validator string, signKey *ecdsa.P
 	if validator == "" {
 		validator = bc.leaderForSlot(slot)
 	}
-	nextState, err := consensus.ApplyTransactions(bc.State, txs)
+	nextState, err := consensus.ApplyTransactions(bc.State, txs, bc.validatorRewardAddress(validator))
 	if err != nil {
 		t.Fatalf("apply txs: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestVerifyBlockOnAcceptRejectsInvalidTx(t *testing.T) {
 	}
 	bc.SetBalance(validator.Address, 100)
 
-	tx := domain.Transaction{To: receiver.Address, Amount: 10}
+	tx := domain.Transaction{To: receiver.Address, Amount: 10, Fee: 1, Nonce: 1}
 	if err := consensus.SignTransaction(validator.PrivateKey, &tx); err != nil {
 		t.Fatalf("sign tx: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestVerifyBlockOnAcceptRejectsInvalidStateRoot(t *testing.T) {
 	}
 	bc.SetBalance(validator.Address, 100)
 
-	tx := domain.Transaction{To: receiver.Address, Amount: 10}
+	tx := domain.Transaction{To: receiver.Address, Amount: 10, Fee: 1, Nonce: 1}
 	if err := consensus.SignTransaction(validator.PrivateKey, &tx); err != nil {
 		t.Fatalf("sign tx: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestVerifyBlockOnAcceptRejectsWrongLeader(t *testing.T) {
 		wrongKey = bob.PrivateKey
 	}
 
-	nextState, err := consensus.ApplyTransactions(bc.State, nil)
+	nextState, err := consensus.ApplyTransactions(bc.State, nil, "")
 	if err != nil {
 		t.Fatalf("apply txs: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestVerifyBlockOnAcceptRejectsInvalidTxRoot(t *testing.T) {
 	}
 	bc.SetBalance(validator.Address, 100)
 
-	tx := domain.Transaction{To: receiver.Address, Amount: 10}
+	tx := domain.Transaction{To: receiver.Address, Amount: 10, Fee: 1, Nonce: 1}
 	if err := consensus.SignTransaction(validator.PrivateKey, &tx); err != nil {
 		t.Fatalf("sign tx: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestVerifyBlockOnAcceptRejectsExternalForkPrevMismatch(t *testing.T) {
 	bc.SetBalance(bob.Address, 50)
 	bc.SetBalance(charlie.Address, 30)
 
-	tx1 := domain.Transaction{To: bob.Address, Amount: 10}
+	tx1 := domain.Transaction{To: bob.Address, Amount: 10, Fee: 1, Nonce: 1}
 	if err := consensus.SignTransaction(alice.PrivateKey, &tx1); err != nil {
 		t.Fatalf("sign tx: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestVerifyBlockOnAcceptRejectsExternalForkPrevMismatch(t *testing.T) {
 		t.Fatalf("add block: %v", err)
 	}
 
-	tx2 := domain.Transaction{To: charlie.Address, Amount: 5}
+	tx2 := domain.Transaction{To: charlie.Address, Amount: 5, Fee: 1, Nonce: 1}
 	if err := consensus.SignTransaction(bob.PrivateKey, &tx2); err != nil {
 		t.Fatalf("sign tx: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestVerifyBlockOnAcceptRejectsExternalForkPrevMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("state at tip: %v", err)
 	}
-	nextState, err := consensus.ApplyTransactions(stateAtTip, nil)
+	nextState, err := consensus.ApplyTransactions(stateAtTip, nil, "")
 	if err != nil {
 		t.Fatalf("apply txs: %v", err)
 	}

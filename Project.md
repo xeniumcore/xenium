@@ -1,10 +1,14 @@
 ﻿# Xenium Blockchain Roadmap
 
-## Phase 0 — Consensus Engine 
+## Phase 0 — Consensus Engine
 
 **Status:** COMPLETED
 
 Node saat ini sudah mampu menjalankan **single-node deterministic chain simulation**.
+
+**Final summary:**
+
+Phase 0 sudah lengkap dan terverifikasi: consensus hybrid deterministik, fork-choice deterministik, economic safety aktif, validator discipline lengkap, epoch snapshot stabil, PoV on-accept dan leader snapshot check aktif, serta coverage test edge case utama tersedia. Simulasi dapat direproduksi untuk debugging dan validasi chain.
 
 **Implemented:**
 
@@ -14,7 +18,6 @@ Node saat ini sudah mampu menjalankan **single-node deterministic chain simulati
   * PoS leader selection (epoch stake snapshot)
   * PoV state validation (TxRoot + StateRoot) on-accept
   * Leader snapshot check on-accept (only valid leader can insert block)
-  * PoV on-accept test coverage: invalid Tx, invalid StateRoot, invalid TxRoot, invalid prev hash, wrong leader, invalid block signature, external fork prev mismatch
 * **Deterministic fork-choice:** Weight → Slot → Hash
 * **Economic safety:** Reorg guard (MinReorgWeightDeltaP), MaxReorgDepth, N-slot finality (soft finality)
 * **Validator discipline:** Slashing, Jailing, Missed slot tracking
@@ -30,13 +33,29 @@ Node saat ini sudah mampu menjalankan **single-node deterministic chain simulati
 
 > This is the consensus research prototype baseline.
 
+**Phase 0 Checklist (Complete):**
+
+* PoH time source (ticks + slots)
+* PoH deterministic seed for reproducible simulation
+* PoS leader selection (epoch stake snapshot)
+* PoV on-accept: TxRoot + StateRoot + signature
+* Leader snapshot check on-accept
+* Deterministic fork-choice (Weight → Slot → Hash)
+* Economic safety: reorg guard, max depth, N-slot finality
+* Validator discipline: slashing, jailing, missed slot tracking, equivocation
+* Epoch snapshots and multi-fork candidate ranking
+* Observability outputs (reorg metrics, fork table, epoch CSV, stake summaries, fork timeline)
+* PoV on-accept test coverage: invalid Tx, invalid StateRoot, invalid TxRoot, invalid prev hash, wrong leader, invalid block signature, wrong pubkey signature, external fork prev mismatch
+
+**Ready for Phase 1:** Yes
+
 ---
 
-## NEXT PHASES (REAL BLOCKCHAIN MODE)
+## Next Phases (Real Blockchain Mode)
 
 **Transition:** From simulation → real node.
 
-### Phase 1 — Persistent Storage (NEXT 🚨)
+### Phase 1 — Persistent Storage (Completed)
 
 **Goal:** Node survives restart and becomes a **long-running blockchain node**.
 
@@ -67,9 +86,17 @@ data/
 
 > After this phase: Node becomes **restartable blockchain node**.
 
+**Status:** COMPLETED
+
+**Notes:**
+
+* File-based storage wired (`data/blocks.jsonl`, `data/index.json`, `data/snapshots/`)
+* Startup restore implemented (load latest snapshot, replay blocks, rebuild index if missing, restore tip)
+* Genesis persisted for fresh stores
+
 ---
 
-### Phase 2 — Real Transaction Pipeline
+### Phase 2 — Real Transaction Pipeline (Completed)
 
 **Goal:** Blocks contain **real signed transactions**.
 
@@ -87,6 +114,15 @@ data/
   * Block invalid if tx invalid
 
 > After this phase: Node becomes **real ledger**.
+
+**Status:** COMPLETED
+
+**Notes:**
+
+* Transaction fields: Nonce, Fee, Hash, Signature
+* Mempool: thread-safe, fee-priority, deduplicate by hash
+* Selection: `SelectTxsForBlock` from mempool
+* Validation: signature, nonce, balances, fees to producer
 
 ---
 

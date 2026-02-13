@@ -3,7 +3,8 @@ package app
 import "xenium/core"
 
 type Config struct {
-	Chain core.ChainConfig
+	Chain   core.ChainConfig
+	DataDir string
 }
 
 func DefaultConfig() Config {
@@ -13,6 +14,8 @@ func DefaultConfig() Config {
 			FinalitySlots:        2,
 			MinReorgWeightDeltaP: 10,
 			EpochLength:          50,
+			MaxBlockTxs:          100,
 		},
+		DataDir: "data",
 	}
 }
