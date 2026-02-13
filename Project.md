@@ -10,9 +10,10 @@ Node saat ini sudah mampu menjalankan **single-node deterministic chain simulati
 
 * **Hybrid consensus**
 
-  * PoH time source (ticks + slots)
+  * PoH time source (ticks + slots) + deterministic seed for reproducible sim
   * PoS leader selection (epoch stake snapshot)
-  * PoV state validation (TxRoot + StateRoot)
+  * PoV state validation (TxRoot + StateRoot) on-accept
+  * Leader snapshot check on-accept (only valid leader can insert block)
 * **Deterministic fork-choice:** Weight → Slot → Hash
 * **Economic safety:** Reorg guard (MinReorgWeightDeltaP), MaxReorgDepth, N-slot finality (soft finality)
 * **Validator discipline:** Slashing, Jailing, Missed slot tracking

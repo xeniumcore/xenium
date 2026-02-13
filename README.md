@@ -60,6 +60,8 @@ Config is injected via `app.Config`:
 - `FinalitySlots`: N-slot finality window
 - `MinReorgWeightDeltaP`: minimum percent of active stake required to reorg
 - `EpochLength`: slots per epoch for stake snapshots
+- `DeterministicPoH`: if true, PoH seed is fixed for reproducible simulations
+- `PoHSeed`: seed value used when `DeterministicPoH` is enabled
 
 Default values are defined in `app/config.go`.
 
