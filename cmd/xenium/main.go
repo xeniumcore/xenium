@@ -1,16 +1,32 @@
 package main
 
 import (
+	"crypto/ecdsa"
 	"fmt"
+	"os"
+	"sort"
+	"strings"
 
 	"xenium/adapters"
 	"xenium/app"
 	"xenium/consensus"
+	"xenium/core"
 	"xenium/domain"
 )
 
+const (
+	colorReset  = "\x1b[0m"
+	colorGreen  = "\x1b[32m"
+	colorRed    = "\x1b[31m"
+	colorYellow = "\x1b[33m"
+	colorCyan   = "\x1b[36m"
+)
+
 func main() {
-	node := app.NewNode(app.DefaultConfig(), adapters.SystemClock{}, adapters.StdLogger{})
+	cfg := app.DefaultConfig()
+	cfg.Chain.DeterministicPoH = true
+	cfg.Chain.PoHSeed = 1
+	node := app.NewNode(cfg, adapters.SystemClock{}, adapters.StdLogger{})
 
 	xenium := node.Chain
 
@@ -40,6 +56,8 @@ func main() {
 	xenium.SetBalance(alice.Address, 200)
 	xenium.SetBalance(bob.Address, 100)
 	xenium.SetBalance(charlie.Address, 80)
+
+	printStakeSummary("Stake (initial)", xenium)
 
 	tx1 := domain.Transaction{To: bob.Address, Amount: 50}
 	if err := consensus.SignTransaction(alice.PrivateKey, &tx1); err != nil {
@@ -75,17 +93,47 @@ func main() {
 		panic(err)
 	}
 
+	// Extend the fork to ensure higher cumulative weight.
+	tx4 := domain.Transaction{To: bob.Address, Amount: 5}
+	if err := consensus.SignTransaction(alice.PrivateKey, &tx4); err != nil {
+		panic(err)
+	}
+	forkHash, err = xenium.AddBlockExternal(forkHash, []domain.Transaction{tx4})
+	if err != nil {
+		panic(err)
+	}
+
+	// Additional forks for multi-candidate evaluation.
+	_, err = xenium.AddBlockExternal(parentHash, []domain.Transaction{makeTx(bob.PrivateKey, alice.Address, 2)})
+	if err != nil {
+		panic(err)
+	}
+	forkB, err := xenium.AddBlockExternal(parentHash, []domain.Transaction{makeTx(alice.PrivateKey, bob.Address, 3)})
+	if err != nil {
+		panic(err)
+	}
+	_, err = xenium.AddBlockExternal(forkB, []domain.Transaction{makeTx(bob.PrivateKey, charlie.Address, 1)})
+	if err != nil {
+		panic(err)
+	}
+
 	forkScore := xenium.ScoreTip(forkHash)
 	afterTip := xenium.CanonicalTipHash()
 	afterScore := xenium.ScoreTip(afterTip)
 	newChain := xenium.Chain
 	reorgDepth := computeReorgDepth(oldChain, newChain)
 	reorged := beforeTip != afterTip
+	requiredDelta, actualDelta := xenium.WeightDeltaRequired(beforeScore.CumulativeWeight, forkScore.CumulativeWeight)
+	deltaPass := actualDelta >= requiredDelta
+
+	beforeSnap := xenium.GetEpochSnapshot(beforeScore.Slot)
+	forkSnap := xenium.GetEpochSnapshot(forkScore.Slot)
 
 	fmt.Println("[Before]")
 	fmt.Printf("Tip Hash: %s\n", beforeTip)
 	fmt.Printf("Slot: %d\n", beforeScore.Slot)
 	fmt.Printf("Weight: %d\n", beforeScore.CumulativeWeight)
+	fmt.Printf("Epoch: %d  ActiveStake: %d  Validators: %d\n", beforeSnap.Epoch, beforeSnap.TotalStake, len(beforeSnap.Validators))
 	fmt.Println()
 
 	fmt.Println("[Insert]")
@@ -93,6 +141,7 @@ func main() {
 	fmt.Printf("Parent: %s\n", parentHash)
 	fmt.Printf("Slot: %d\n", forkScore.Slot)
 	fmt.Printf("Weight: %d\n", forkScore.CumulativeWeight)
+	fmt.Printf("Epoch: %d  ActiveStake: %d  Validators: %d\n", forkSnap.Epoch, forkSnap.TotalStake, len(forkSnap.Validators))
 	fmt.Println()
 
 	fmt.Println("[Reorg]")
@@ -118,6 +167,33 @@ func main() {
 		fmt.Printf("Slot %d -> %s\n", block.Slot, block.Hash)
 	}
 	fmt.Println()
+	fmt.Println("=== Fork Candidate Ranking ===")
+	fmt.Printf("Canonical: slot=%d weight=%d hash=%s\n", beforeScore.Slot, beforeScore.CumulativeWeight, beforeTip)
+	fmt.Printf("Fork:      slot=%d weight=%d hash=%s\n", forkScore.Slot, forkScore.CumulativeWeight, forkHash)
+	fmt.Printf("Delta:     required=%d actual=%d pass=%t\n", requiredDelta, actualDelta, deltaPass)
+	fmt.Println("==============================")
+	fmt.Println("=== Fork Candidates (All Tips) ===")
+	candidates := xenium.GetForkCandidates()
+	for _, c := range candidates {
+		req, act := xenium.WeightDeltaRequired(beforeScore.CumulativeWeight, c.CumulativeWeight)
+		pass := act >= req
+		cue := "FAIL"
+		if pass {
+			cue = "PASS"
+		}
+		snap := xenium.GetEpochSnapshot(c.Slot)
+		cueColor := colorRed
+		if pass {
+			cueColor = colorGreen
+		}
+		markColor := " "
+		if c.Hash == xenium.CanonicalTipHash() {
+			markColor = colorCyan + "*" + colorReset
+		}
+		fmt.Printf("[%s] tip=%s slot=%d weight=%d parent=%s epoch=%d activeStake=%d validators=%d deltaRequired=%d deltaActual=%d %s%s%s\n",
+			markColor, c.Hash, c.Slot, c.CumulativeWeight, c.Parent, snap.Epoch, snap.TotalStake, len(snap.Validators), req, act, cueColor, cue, colorReset)
+	}
+	fmt.Println("==================================")
 	fmt.Println("=== Reorg Metrics ===")
 	stats := xenium.GetReorgStats()
 	fmt.Printf("INFO: %d\n", stats.Info)
@@ -145,6 +221,10 @@ func main() {
 		fmt.Printf("StateRoot: %s\n", block.StateRoot)
 		fmt.Println("-----")
 	}
+
+	printStakeSummary("Stake (final)", xenium)
+	writeEpochSnapshotCSV("epoch_snapshots.csv", xenium)
+	printForkTimeline(xenium)
 }
 
 func computeReorgDepth(oldChain []domain.Block, newChain []domain.Block) int {
@@ -160,4 +240,67 @@ func computeReorgDepth(oldChain []domain.Block, newChain []domain.Block) int {
 		}
 	}
 	return len(oldChain) - diverge
+}
+
+func printStakeSummary(label string, chain *core.Blockchain) {
+	fmt.Println(label)
+	names := make([]string, 0, len(chain.Validators))
+	for name := range chain.Validators {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Printf("%s: %d\n", name, chain.Validators[name].Stake)
+	}
+	fmt.Println()
+}
+
+func writeEpochSnapshotCSV(path string, chain *core.Blockchain) {
+	snaps := chain.GetAllEpochSnapshots()
+	var b strings.Builder
+	b.WriteString("epoch,total_stake,validator,stake\n")
+	for _, s := range snaps {
+		keys := make([]string, 0, len(s.Validators))
+		for k := range s.Validators {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if len(keys) == 0 {
+			b.WriteString(fmt.Sprintf("%d,%d,,\n", s.Epoch, s.TotalStake))
+			continue
+		}
+		for _, k := range keys {
+			b.WriteString(fmt.Sprintf("%d,%d,%s,%d\n", s.Epoch, s.TotalStake, k, s.Validators[k]))
+		}
+	}
+	_ = os.WriteFile(path, []byte(b.String()), 0644)
+	fmt.Printf("Wrote epoch snapshot CSV: %s\n", path)
+}
+
+func printForkTimeline(chain *core.Blockchain) {
+	fmt.Println("Fork timeline (canonical + tips)")
+	candidates := chain.GetForkCandidates()
+	tipsBySlot := make(map[uint64][]string)
+	for _, c := range candidates {
+		tipsBySlot[c.Slot] = append(tipsBySlot[c.Slot], c.Hash)
+	}
+	for _, tips := range tipsBySlot {
+		sort.Strings(tips)
+	}
+	for _, block := range chain.Chain {
+		line := fmt.Sprintf("slot %d canonical=%s", block.Slot, block.Hash)
+		if tips, ok := tipsBySlot[block.Slot]; ok && len(tips) > 0 {
+			line += " tips=" + strings.Join(tips, ",")
+		}
+		fmt.Println(line)
+	}
+	fmt.Println()
+}
+
+func makeTx(priv *ecdsa.PrivateKey, to string, amount int) domain.Transaction {
+	tx := domain.Transaction{To: to, Amount: amount}
+	if err := consensus.SignTransaction(priv, &tx); err != nil {
+		panic(err)
+	}
+	return tx
 }

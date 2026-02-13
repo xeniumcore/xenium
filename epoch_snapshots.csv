@@ -1,0 +1,4 @@
+epoch,total_stake,validator,stake
+0,200,Alice,100
+0,200,Bob,60
+0,200,Charlie,40

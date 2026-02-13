@@ -8,23 +8,23 @@
 
 *Xenium Testnet Roadmap.*
 
-## 🔍 Summary
+## Summary
 
 Xenium is a single-node, experimental blockchain consensus engine written in Go. It combines PoH (time), PoS (stake), and PoV (state validity) with deterministic fork-choice, reorg guards, and epoch stake snapshots. The architecture is hexagonal to keep core consensus deterministic and infrastructure swappable.
 
-## 🧱 Architecture
+## Architecture
 
 ![Xenium Architecture](assets/architecture.png)
 
 *Xenium Architecture Diagram.*
 
-## 🧭 Consensus Overview
+## Consensus Overview
 
 - **PoH (Proof of History):** deterministic tick/slot time source
 - **PoS (Proof of Stake):** stake-weighted leader selection
 - **PoV (Proof of Validity):** state transition validation and signature checks
 
-## 🧪 Fork-Choice Specification
+## Fork-Choice Specification
 
 Fork-choice is deterministic and weight-first:
 
@@ -40,19 +40,19 @@ Reorg is allowed only if:
 
 Active stake excludes jailed validators.
 
-## 🧊 Epoch Stake Snapshots
+## Epoch Stake Snapshots
 
 - `epoch = slot / EpochLength`
 - At epoch boundaries, active stake is snapshotted and frozen for the epoch
 - Snapshots are used for fork-choice weight, reorg weight delta, and leader selection
 
-## ⚖️ Slashing and Jail
+## Slashing and Jail
 
 - **Missed slot slashing:** missed slot counter per validator; threshold triggers slash + jail
 - **Equivocation slashing:** double-producer detection per slot triggers slash + jail
 - **Jailed validators** are excluded from active stake and snapshots
 
-## ⚙️ Configuration
+## Configuration
 
 Config is injected via `app.Config`:
 
@@ -63,19 +63,19 @@ Config is injected via `app.Config`:
 
 Default values are defined in `app/config.go`.
 
-## ⚡ Running
+## Running
 
 ```powershell
 go run ./cmd/xenium
 ```
 
-## 📌 Project Status
+## Project Status
 
 - Single-node simulation only
 - No P2P, networking, or persistent storage
 - Consensus engine and observability layers are stable enough for controlled experiments
 
-## 🗺️ Testnet Roadmap
+## Testnet Roadmap
 
 1. **Setup Node & Genesis**
 - Create a multi-validator genesis, define validator keys, stake, and initial balances, and verify sync from genesis.
@@ -98,14 +98,14 @@ go run ./cmd/xenium
 7. **Stress Test & Metrics**
 - Run high throughput tests and track fork frequency, missed slots, and chain weight.
 
-## 🧠 Formal Invariants
+## Formal Invariants
 
 - **Deterministic fork-choice:** ordering is weight -> slot -> hash with explicit reorg guards
 - **Snapshot safety:** epoch stake snapshots are immutable during an epoch
 - **Finality safety:** reorgs cannot touch finalized slots
 - **Slashing correctness:** equivocation and missed-slot thresholds must produce slash + jail
 
-## 🔗 Quick Links
+## Quick Links
 
 - `core/` — chain engine, fork-choice, finality, metrics
 - `consensus/` — PoH / PoS / PoV logic

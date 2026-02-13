@@ -23,6 +23,8 @@ type ChainConfig struct {
 	FinalitySlots        uint64
 	MinReorgWeightDeltaP int
 	EpochLength          uint64
+	DeterministicPoH     bool
+	PoHSeed              int64
 }
 
 type ReorgMetrics struct {
@@ -94,7 +96,9 @@ func NewBlockchain(cfg ChainConfig, clock ports.Clock, logger ports.Logger) *Blo
 		bc.Config.EpochLength = consensus.SlotsPerEpoch
 	}
 	seed := int64(0)
-	if bc.Clock != nil {
+	if bc.Config.DeterministicPoH {
+		seed = bc.Config.PoHSeed
+	} else if bc.Clock != nil {
 		seed = bc.Clock.UnixNano()
 	}
 	bc.rand = rand.New(rand.NewSource(seed))
@@ -172,6 +176,11 @@ func (bc *Blockchain) AddBlock(txs []domain.Transaction) error {
 		return err
 	}
 
+	if err := bc.verifyBlockOnAccept(prev, block, bc.State); err != nil {
+		consensus.SlashValidator(bc.Validators, validator, consensus.SlashPenalty)
+		return err
+	}
+
 	eqErr := bc.registerSlotProducer(block)
 	bc.insertBlock(block)
 	bc.updateCanonical(block.Hash)
@@ -233,6 +242,11 @@ func (bc *Blockchain) AddBlockExternal(prevHash string, txs []domain.Transaction
 		return "", errors.New("missing validator signing key")
 	}
 	if err := consensus.SignBlock(v.PrivKey, &block); err != nil {
+		consensus.SlashValidator(bc.Validators, validator, consensus.SlashPenalty)
+		return "", err
+	}
+
+	if err := bc.verifyBlockOnAccept(parent, block, parentState); err != nil {
 		consensus.SlashValidator(bc.Validators, validator, consensus.SlashPenalty)
 		return "", err
 	}
@@ -323,6 +337,40 @@ func (bc *Blockchain) VerifyChain() error {
 			return errors.New("invalid state root at index " + itoa(i))
 		}
 		state = nextState
+	}
+	return nil
+}
+
+func (bc *Blockchain) verifyBlockOnAccept(prev domain.Block, block domain.Block, state map[string]int) error {
+	if block.PrevHash != prev.Hash {
+		return errors.New("invalid prev hash for block")
+	}
+	snap := bc.snapshotForSlot(block.Slot)
+	if snap == nil {
+		return errors.New("missing epoch snapshot for block")
+	}
+	if err := consensus.VerifyLeaderSnapshot(block.Slot, block.Validator, snap.Validators); err != nil {
+		return err
+	}
+	if err := consensus.VerifyTransactions(block.Transactions); err != nil {
+		return err
+	}
+	if consensus.TxRoot(block.Transactions) != block.TxRoot {
+		return errors.New("invalid tx root for block")
+	}
+	nextState, err := consensus.ApplyTransactions(state, block.Transactions)
+	if err != nil {
+		return err
+	}
+	if consensus.StateRoot(nextState) != block.StateRoot {
+		return errors.New("invalid state root for block")
+	}
+	v := bc.Validators[block.Validator]
+	if v == nil {
+		return errors.New("unknown validator for block")
+	}
+	if err := consensus.VerifyBlockSignature(block, v.PubKey); err != nil {
+		return err
 	}
 	return nil
 }
@@ -424,6 +472,31 @@ func (bc *Blockchain) scoreTip(tipHash string) ChainScore {
 	return ChainScore{Slot: block.Slot, CumulativeWeight: weight, Hash: block.Hash}
 }
 
+func (bc *Blockchain) scoreTipCached(tipHash string, cache map[string]uint64) ChainScore {
+	block, ok := bc.Blocks[tipHash]
+	if !ok {
+		return ChainScore{}
+	}
+	weight := bc.cumulativeWeightCached(tipHash, cache)
+	return ChainScore{Slot: block.Slot, CumulativeWeight: weight, Hash: block.Hash}
+}
+
+func (bc *Blockchain) cumulativeWeightCached(hash string, cache map[string]uint64) uint64 {
+	if v, ok := cache[hash]; ok {
+		return v
+	}
+	block, ok := bc.Blocks[hash]
+	if !ok {
+		return 0
+	}
+	weight := bc.snapshotStake(block.Slot, block.Validator)
+	if block.PrevHash != "GENESIS" {
+		weight += bc.cumulativeWeightCached(block.PrevHash, cache)
+	}
+	cache[hash] = weight
+	return weight
+}
+
 func betterScore(a ChainScore, b ChainScore) bool {
 	if a.CumulativeWeight != b.CumulativeWeight {
 		return a.CumulativeWeight > b.CumulativeWeight
@@ -460,6 +533,10 @@ func (bc *Blockchain) weightDeltaRequired(oldWeight uint64, newWeight uint64) (u
 		actual = newWeight - oldWeight
 	}
 	return minDelta, actual
+}
+
+func (bc *Blockchain) WeightDeltaRequired(oldWeight uint64, newWeight uint64) (uint64, uint64) {
+	return bc.weightDeltaRequired(oldWeight, newWeight)
 }
 
 func (bc *Blockchain) activeStake() uint64 {
@@ -576,6 +653,50 @@ func (bc *Blockchain) snapshotForSlot(slot uint64) *EpochSnapshot {
 	epoch := bc.epochForSlot(slot)
 	bc.ensureSnapshot(epoch)
 	return bc.snapshots[epoch]
+}
+
+func (bc *Blockchain) GetEpochSnapshot(slot uint64) EpochSnapshot {
+	snap := bc.snapshotForSlot(slot)
+	if snap == nil {
+		return EpochSnapshot{}
+	}
+	out := EpochSnapshot{
+		Epoch:      snap.Epoch,
+		TotalStake: snap.TotalStake,
+		Validators: make(map[string]uint64, len(snap.Validators)),
+	}
+	for k, v := range snap.Validators {
+		out.Validators[k] = v
+	}
+	return out
+}
+
+func (bc *Blockchain) GetAllEpochSnapshots() []EpochSnapshot {
+	if len(bc.snapshots) == 0 {
+		return nil
+	}
+	epochs := make([]uint64, 0, len(bc.snapshots))
+	for k := range bc.snapshots {
+		epochs = append(epochs, k)
+	}
+	sort.Slice(epochs, func(i, j int) bool { return epochs[i] < epochs[j] })
+	out := make([]EpochSnapshot, 0, len(epochs))
+	for _, e := range epochs {
+		s := bc.snapshots[e]
+		if s == nil {
+			continue
+		}
+		cp := EpochSnapshot{
+			Epoch:      s.Epoch,
+			TotalStake: s.TotalStake,
+			Validators: make(map[string]uint64, len(s.Validators)),
+		}
+		for k, v := range s.Validators {
+			cp.Validators[k] = v
+		}
+		out = append(out, cp)
+	}
+	return out
 }
 
 func (bc *Blockchain) snapshotStake(slot uint64, validator string) uint64 {
@@ -756,6 +877,13 @@ type ValidatorSummary struct {
 	JailedUntil uint64
 }
 
+type ForkCandidate struct {
+	Hash             string
+	Slot             uint64
+	CumulativeWeight uint64
+	Parent           string
+}
+
 func (bc *Blockchain) GetValidatorSummaries() []ValidatorSummary {
 	names := make([]string, 0, len(bc.Validators))
 	for name := range bc.Validators {
@@ -795,6 +923,45 @@ func (bc *Blockchain) GetValidatorSummaries() []ValidatorSummary {
 		})
 	}
 	return out
+}
+
+func (bc *Blockchain) GetForkCandidates() []ForkCandidate {
+	if len(bc.Blocks) == 0 {
+		return nil
+	}
+	hasChild := make(map[string]bool, len(bc.Blocks))
+	for _, parent := range bc.Parents {
+		if parent != "" && parent != "GENESIS" {
+			hasChild[parent] = true
+		}
+	}
+	weightCache := make(map[string]uint64, len(bc.Blocks))
+	candidates := make([]ForkCandidate, 0)
+	for hash, block := range bc.Blocks {
+		if hash == "" {
+			continue
+		}
+		if hasChild[hash] {
+			continue
+		}
+		score := bc.scoreTipCached(hash, weightCache)
+		candidates = append(candidates, ForkCandidate{
+			Hash:             hash,
+			Slot:             score.Slot,
+			CumulativeWeight: score.CumulativeWeight,
+			Parent:           block.PrevHash,
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].CumulativeWeight != candidates[j].CumulativeWeight {
+			return candidates[i].CumulativeWeight > candidates[j].CumulativeWeight
+		}
+		if candidates[i].Slot != candidates[j].Slot {
+			return candidates[i].Slot > candidates[j].Slot
+		}
+		return candidates[i].Hash < candidates[j].Hash
+	})
+	return candidates
 }
 
 func ensureLogger(l ports.Logger) ports.Logger {
