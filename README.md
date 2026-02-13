@@ -10,9 +10,9 @@
 
 ## ?? Summary
 
-Xenium is an experimental, single-node blockchain consensus engine in Go. It combines PoH (time), PoS (stake), and PoV (state validity) with deterministic fork-choice, reorg guards, and epoch-based stake snapshots. The codebase uses a hexagonal architecture to isolate core consensus logic from infrastructure.
+Xenium is a single-node, experimental blockchain consensus engine written in Go. It combines PoH (time), PoS (stake), and PoV (state validity) with deterministic fork-choice, reorg guards, and epoch stake snapshots. The architecture is hexagonal to keep core consensus deterministic and infrastructure swappable.
 
-## ??? Architecture
+## ?? Architecture
 
 ![Xenium Architecture](assets/architecture.png)
 
@@ -64,7 +64,7 @@ Config is injected via pp.Config:
 
 Default values are defined in pp/config.go.
 
-## ?? Running
+## ? Running
 
 `powershell
 go run ./cmd/xenium
@@ -79,22 +79,36 @@ go run ./cmd/xenium
 ## ??? Testnet Roadmap
 
 1. **Setup Node & Genesis**
-Create a multi-validator genesis, define validator keys/stake/balances, and verify sync from genesis.
+- Create a multi-validator genesis, define validator keys/stake/balances, and verify sync from genesis.
 
 2. **Consensus & Reorg Testing**
-Run with weight-first + minDelta, simulate minor and heavier forks, and monitor missed slots, jailing, and slashing.
+- Run with weight-first + minDelta, simulate minor and heavier forks, and monitor missed slots, jailing, and slashing.
 
 3. **Transaction Flow Test**
-Send transfers and verify balances, PoH hash, TxRoot, and StateRoot.
+- Send transfers and verify balances, PoH hash, TxRoot, and StateRoot.
 
 4. **P2P / Network Layer**
-Implement discovery and gossip, simulate offline/reconnect, and monitor latency and propagation.
+- Implement discovery and gossip, simulate offline/reconnect, and monitor latency and propagation.
 
 5. **Wallet & Explorer (Optional)**
-Connect a wallet and expose blocks, slots, and validator stats via an explorer.
+- Connect a wallet and expose blocks, slots, and validator stats via an explorer.
 
 6. **Public Testnet**
-Open to external validators/users with test tokens and collect feedback/bugs.
+- Open to external validators/users with test tokens and collect feedback/bugs.
 
 7. **Stress Test & Metrics**
-Run high throughput tests and track fork frequency, missed slots, and chain weight.
+- Run high throughput tests and track fork frequency, missed slots, and chain weight.
+
+## ?? Formal Invariants
+
+- **Deterministic fork-choice:** ordering is weight ? slot ? hash with explicit reorg guards.
+- **Snapshot safety:** epoch stake snapshots are immutable during an epoch.
+- **Finality safety:** reorgs cannot touch finalized slots.
+- **Slashing correctness:** equivocation and missed-slot thresholds must produce slash + jail.
+
+## ?? Quick Links
+
+- core/ — chain engine, fork-choice, finality, metrics
+- consensus/ — PoH / PoS / PoV logic
+- domain/ — data structures and value objects
+- cmd/xenium/ — CLI entrypoint
