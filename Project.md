@@ -14,6 +14,7 @@ Node saat ini sudah mampu menjalankan **single-node deterministic chain simulati
   * PoS leader selection (epoch stake snapshot)
   * PoV state validation (TxRoot + StateRoot) on-accept
   * Leader snapshot check on-accept (only valid leader can insert block)
+  * PoV on-accept test coverage: invalid Tx, invalid StateRoot, invalid TxRoot, invalid prev hash, wrong leader, invalid block signature, external fork prev mismatch
 * **Deterministic fork-choice:** Weight → Slot → Hash
 * **Economic safety:** Reorg guard (MinReorgWeightDeltaP), MaxReorgDepth, N-slot finality (soft finality)
 * **Validator discipline:** Slashing, Jailing, Missed slot tracking

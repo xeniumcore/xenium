@@ -218,6 +218,50 @@ func TestVerifyBlockOnAcceptRejectsInvalidBlockSignature(t *testing.T) {
 	}
 }
 
+func TestVerifyBlockOnAcceptRejectsWrongPubKeySignature(t *testing.T) {
+	bc := newTestChain(t)
+
+	alice, err := domain.NewWallet()
+	if err != nil {
+		t.Fatalf("wallet: %v", err)
+	}
+	bob, err := domain.NewWallet()
+	if err != nil {
+		t.Fatalf("wallet: %v", err)
+	}
+	if err := bc.AddValidator("Alice", 100, alice.PublicKey, alice.PrivateKey); err != nil {
+		t.Fatalf("add validator: %v", err)
+	}
+	if err := bc.AddValidator("Bob", 100, bob.PublicKey, bob.PrivateKey); err != nil {
+		t.Fatalf("add validator: %v", err)
+	}
+
+	prev := bc.Blocks[bc.CanonicalTip]
+	_, _ = bc.poh.Tick(consensus.TicksPerSlot)
+	slot := bc.poh.Slot()
+	bc.ensureSnapshotForSlot(slot)
+
+	block := domain.Block{
+		Index:        prev.Index + 1,
+		PrevHash:     prev.Hash,
+		Slot:         slot,
+		Tick:         bc.poh.CurrentTick,
+		Validator:    "Alice",
+		TxRoot:       consensus.TxRoot(nil),
+		StateRoot:    consensus.StateRoot(nil),
+		PoHHash:      consensus.PoHHashHex(bc.poh.Hash),
+		Transactions: nil,
+	}
+	if err := consensus.SignBlock(bob.PrivateKey, &block); err != nil {
+		t.Fatalf("sign block: %v", err)
+	}
+
+	err = bc.verifyBlockOnAccept(prev, block, bc.State)
+	if err == nil || !strings.Contains(err.Error(), "invalid block signature") {
+		t.Fatalf("expected invalid block signature error, got: %v", err)
+	}
+}
+
 func TestVerifyBlockOnAcceptRejectsInvalidTxRoot(t *testing.T) {
 	bc := newTestChain(t)
 
